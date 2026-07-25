@@ -1,0 +1,9 @@
+streamlit
+requests
+beautifulsoup4
+readability-lxml
+lxml
+sentence-transformers
+groq
+numpy
+scikit-learn
