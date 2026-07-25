@@ -1,4 +1,4 @@
-# app.py – Web QnA with RAG (SerpAPI + Groq)
+# app.py
 import streamlit as st
 from web_search import fetch_web_content
 from chunking import chunk_plain_text
@@ -24,10 +24,13 @@ if "embeddings" not in st.session_state:
     st.session_state.embeddings = None
 if "query_done" not in st.session_state:
     st.session_state.query_done = False
+if "debug_info" not in st.session_state:
+    st.session_state.debug_info = []
 
 # --- Step 1: Search & Load ---
 st.subheader("1. Enter your search query")
 user_query = st.text_input("What do you want to know about?")
+
 if st.button("Search & Load Content") and user_query:
     with st.spinner(f"Searching for '{user_query}' and scraping pages..."):
         combined_text = fetch_web_content(user_query, SERP_API_KEY, max_pages=3)
@@ -38,7 +41,13 @@ if st.button("Search & Load Content") and user_query:
             st.session_state.query_done = True
             st.success(f"Loaded {len(chunks)} chunks from the web.")
         else:
-            st.error("No usable content found. Try a different query.")
+            st.error("No usable content found. Try a different query or check the debug info below.")
+
+    # Show debug info
+    if st.session_state.debug_info:
+        with st.expander("🔍 Debug info (what was scraped)"):
+            for line in st.session_state.debug_info:
+                st.write(line)
 
 # --- Step 2: Ask questions ---
 if st.session_state.query_done and st.session_state.chunks:
@@ -55,7 +64,6 @@ if st.session_state.query_done and st.session_state.chunks:
 
                 client = Groq(api_key=GROQ_API_KEY)
 
-                # Updated prompt: strict, direct, no inner monologue
                 messages = [
                     {
                         "role": "system",
@@ -77,7 +85,7 @@ if st.session_state.query_done and st.session_state.chunks:
                     response = client.chat.completions.create(
                         model="llama-3.1-8b-instant",
                         messages=messages,
-                        temperature=0.0,      # more deterministic
+                        temperature=0.0,
                         max_tokens=300
                     )
                     answer = response.choices[0].message.content
