@@ -3,6 +3,7 @@ requests
 beautifulsoup4
 readability-lxml
 lxml
+serpapi
 sentence-transformers
 groq
 numpy
