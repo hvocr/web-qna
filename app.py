@@ -1,4 +1,4 @@
-# app.py
+# app.py – Web QnA with RAG (SerpAPI + Groq)
 import streamlit as st
 from web_search import fetch_web_content
 from chunking import chunk_plain_text
@@ -9,7 +9,7 @@ from groq import Groq
 st.set_page_config(page_title="Web QnA with RAG", layout="wide")
 st.title("🌐 Web QnA – Ask questions from the web")
 
-# Secrets
+# --- Secrets ---
 SERP_API_KEY = st.secrets.get("SERPAPI_API_KEY")
 GROQ_API_KEY = st.secrets.get("GROQ_API_KEY")
 
@@ -17,7 +17,7 @@ if not SERP_API_KEY or not GROQ_API_KEY:
     st.error("Please set SERPAPI_API_KEY and GROQ_API_KEY in secrets.")
     st.stop()
 
-# Session state
+# --- Session state ---
 if "chunks" not in st.session_state:
     st.session_state.chunks = []
 if "embeddings" not in st.session_state:
@@ -25,7 +25,7 @@ if "embeddings" not in st.session_state:
 if "query_done" not in st.session_state:
     st.session_state.query_done = False
 
-# Step 1: Search & Load
+# --- Step 1: Search & Load ---
 st.subheader("1. Enter your search query")
 user_query = st.text_input("What do you want to know about?")
 if st.button("Search & Load Content") and user_query:
@@ -40,13 +40,12 @@ if st.button("Search & Load Content") and user_query:
         else:
             st.error("No usable content found. Try a different query.")
 
-# Step 2: Ask questions
+# --- Step 2: Ask questions ---
 if st.session_state.query_done and st.session_state.chunks:
     st.subheader("2. Ask a question about the retrieved content")
     question = st.text_input("Your question:")
     if question:
         with st.spinner("Generating answer..."):
-            # search returns list of (chunk_text, score)
             top_results = search(question, st.session_state.embeddings, st.session_state.chunks, top_k=3)
             if not top_results:
                 st.warning("No relevant chunks found.")
@@ -55,24 +54,36 @@ if st.session_state.query_done and st.session_state.chunks:
                 context = "\n\n---\n\n".join(top_chunks)
 
                 client = Groq(api_key=GROQ_API_KEY)
-                prompt = f"""You are a helpful assistant. Answer based on the context below. If you don't know, say so.
 
-Context:
-{context}
+                # Updated prompt: strict, direct, no inner monologue
+                messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a concise assistant. "
+                            "Answer the question directly based ONLY on the provided context. "
+                            "Do not add opinions, speculation, or mention that it's subjective. "
+                            "If the context does not contain a clear answer, say exactly: "
+                            "'The context does not provide enough information to answer.'"
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Context:\n{context}\n\nQuestion: {question}"
+                    }
+                ]
 
-Question: {question}
-
-Answer:"""
                 try:
                     response = client.chat.completions.create(
                         model="llama-3.1-8b-instant",
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=0.2,
-                        max_tokens=500
+                        messages=messages,
+                        temperature=0.0,      # more deterministic
+                        max_tokens=300
                     )
                     answer = response.choices[0].message.content
                     st.markdown("### Answer")
                     st.write(answer)
+
                     with st.expander("Show retrieved chunks"):
                         for i, (chunk, score) in enumerate(top_results):
                             st.markdown(f"**Chunk {i+1}** (similarity: {score:.3f})")
