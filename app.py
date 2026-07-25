@@ -1,123 +1,131 @@
-# web_search.py
-import requests
-from bs4 import BeautifulSoup
-from urllib.robotparser import RobotFileParser
-from readability import Document
-import time
-from typing import List, Optional
+# app.py – Web QnA with full error handling
 import streamlit as st
+import traceback
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
-}
+try:
+    from web_search import fetch_web_content
+    from chunking import chunk_plain_text
+    from generate_embeddings import generate_embeddings
+    from search_embeddings import search
+    from groq import Groq
+except Exception as e:
+    st.error(f"Import error: {e}")
+    st.code(traceback.format_exc())
+    st.stop()
 
-def search_serpapi(query: str, api_key: str, num_results: int = 5) -> List[str]:
-    """
-    Return unique organic URLs from Google Search via SerpAPI.
-    Sponsored/paid results are filtered out.
-    """
-    params = {
-        "q": query,
-        "api_key": api_key,
-        "engine": "google",
-        "num": num_results,
-    }
-    try:
-        response = requests.get("https://serpapi.com/search", params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        urls = []
-        for result in data.get("organic_results", []):
-            # Skip sponsored/paid results
-            if result.get("paid") or result.get("sponsored"):
-                continue
-            link = result.get("link")
-            if link:
-                urls.append(link)
-        # Remove duplicates while preserving order
-        seen = set()
-        unique_urls = []
-        for url in urls:
-            if url not in seen:
-                seen.add(url)
-                unique_urls.append(url)
-        return unique_urls[:num_results]  # ensure we return only requested count
-    except Exception as e:
-        st.error(f"SerpAPI error: {e}")
-        return []
+st.set_page_config(page_title="Web QnA with RAG", layout="wide")
+st.title("🌐 Web QnA – Ask questions from the web")
 
-def is_scraping_allowed(url: str) -> bool:
-    """Check robots.txt for the given URL."""
-    from urllib.parse import urlparse
-    parsed = urlparse(url)
-    base = f"{parsed.scheme}://{parsed.netloc}"
-    rp = RobotFileParser()
-    rp.set_url(f"{base}/robots.txt")
-    try:
-        rp.read()
-        return rp.can_fetch("*", url)
-    except:
-        # If robots.txt is unreachable, assume allowed (but we'll still handle errors)
-        return True
+# --- Secrets with fallback ---
+try:
+    SERP_API_KEY = st.secrets["SERPAPI_API_KEY"]
+    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+except KeyError as e:
+    st.error(f"Missing secret: {e}. Please add it in Streamlit Cloud > Settings > Secrets.")
+    st.stop()
+except Exception as e:
+    st.error(f"Error reading secrets: {e}")
+    st.stop()
 
-def scrape_page(url: str, timeout: int = 15) -> Optional[str]:
-    """Extract main text using readability-lxml, fallback to BeautifulSoup."""
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=timeout)
-        resp.raise_for_status()
-        # Try readability first
-        try:
-            doc = Document(resp.text)
-            html = doc.summary()
-            soup = BeautifulSoup(html, 'html.parser')
-            text = soup.get_text(separator="\n", strip=True)
-        except:
-            # Fallback: remove scripts and styles, extract from common tags
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            for tag in soup(['script', 'style', 'nav', 'footer', 'header']):
-                tag.decompose()
-            text_parts = []
-            for tag in soup.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li']):
-                txt = tag.get_text(strip=True)
-                if txt:
-                    text_parts.append(txt)
-            text = "\n".join(text_parts)
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        return "\n".join(lines)
-    except Exception as e:
-        return None
-
-def fetch_web_content(query: str, serp_api_key: str, max_pages: int = 3) -> str:
-    """
-    Search, check legality, scrape, and return combined text.
-    Also populates st.session_state.debug_info with progress.
-    """
-    urls = search_serpapi(query, serp_api_key, num_results=max_pages + 3)
-    if not urls:
-        st.session_state.debug_info = ["No organic, non-sponsored URLs found from SerpAPI."]
-        return ""
-
+# --- Session state ---
+if "chunks" not in st.session_state:
+    st.session_state.chunks = []
+if "embeddings" not in st.session_state:
+    st.session_state.embeddings = None
+if "query_done" not in st.session_state:
+    st.session_state.query_done = False
+if "debug_info" not in st.session_state:
     st.session_state.debug_info = []
-    texts = []
-    for url in urls:
-        debug_line = f"Checking: {url}"
-        if not is_scraping_allowed(url):
-            debug_line += " - blocked by robots.txt"
-            st.session_state.debug_info.append(debug_line)
-            continue
-        debug_line += " - scraping..."
-        st.session_state.debug_info.append(debug_line)
-        text = scrape_page(url)
-        if text and len(text) > 200:
-            texts.append(text)
-            st.session_state.debug_info.append(f"✓ Scraped {len(text)} chars")
-            if len(texts) >= max_pages:
-                break
-        else:
-            st.session_state.debug_info.append(f"✗ Scraped too little text or failed")
-        time.sleep(1)
 
-    if not texts:
-        st.session_state.debug_info.append("No usable content found.")
-        return ""
-    return "\n\n".join(texts)
+# --- Step 1: Search & Load ---
+st.subheader("1. Enter your search query")
+user_query = st.text_input("What do you want to know about?")
+
+if st.button("Search & Load Content") and user_query:
+    with st.spinner(f"Searching for '{user_query}' and scraping pages..."):
+        try:
+            combined_text = fetch_web_content(user_query, SERP_API_KEY, max_pages=3)
+        except Exception as e:
+            st.error(f"Error during search/scraping: {e}")
+            st.code(traceback.format_exc())
+            combined_text = None
+
+        if combined_text:
+            try:
+                chunks = chunk_plain_text(combined_text, chunk_size=500, overlap=50)
+                st.session_state.chunks = chunks
+                st.session_state.embeddings = generate_embeddings(chunks)
+                st.session_state.query_done = True
+                st.success(f"Loaded {len(chunks)} chunks from the web.")
+            except Exception as e:
+                st.error(f"Error processing text: {e}")
+                st.code(traceback.format_exc())
+        else:
+            st.error(
+                "❌ **No content could be scraped from the search results.**\n\n"
+                "This can happen if:\n"
+                "- The pages are behind paywalls or require login.\n"
+                "- They contain very little text (e.g., forums with minimal content).\n"
+                "- The site blocks scraping (robots.txt).\n\n"
+                "**Try:**\n"
+                "- Using a more specific query (e.g., `\"bloodborne vs elden ring review\"`).\n"
+                "- Adding keywords like `article`, `review`, or `comparison`.\n"
+                "- Searching for a single topic first (e.g., `bloodborne review`).\n\n"
+                "Check the **debug info** below to see which URLs were tried."
+            )
+
+    if st.session_state.debug_info:
+        with st.expander("🔍 Debug info (what was scraped)"):
+            for line in st.session_state.debug_info:
+                st.write(line)
+
+# --- Step 2: Ask questions ---
+if st.session_state.query_done and st.session_state.chunks:
+    st.subheader("2. Ask a question about the retrieved content")
+    question = st.text_input("Your question:")
+    if question:
+        with st.spinner("Generating answer..."):
+            try:
+                top_results = search(question, st.session_state.embeddings, st.session_state.chunks, top_k=3)
+                if not top_results:
+                    st.warning("No relevant chunks found.")
+                else:
+                    top_chunks = [chunk for chunk, _ in top_results]
+                    context = "\n\n---\n\n".join(top_chunks)
+
+                    client = Groq(api_key=GROQ_API_KEY)
+                    messages = [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a concise assistant. "
+                                "Answer the question directly based ONLY on the provided context. "
+                                "Do not add opinions, speculation, or mention that it's subjective. "
+                                "If the context does not contain a clear answer, say exactly: "
+                                "'The context does not provide enough information to answer.'"
+                            )
+                        },
+                        {
+                            "role": "user",
+                            "content": f"Context:\n{context}\n\nQuestion: {question}"
+                        }
+                    ]
+                    response = client.chat.completions.create(
+                        model="llama-3.1-8b-instant",
+                        messages=messages,
+                        temperature=0.0,
+                        max_tokens=300
+                    )
+                    answer = response.choices[0].message.content
+                    st.markdown("### Answer")
+                    st.write(answer)
+
+                    with st.expander("Show retrieved chunks"):
+                        for i, (chunk, score) in enumerate(top_results):
+                            st.markdown(f"**Chunk {i+1}** (similarity: {score:.3f})")
+                            st.write(chunk)
+            except Exception as e:
+                st.error(f"Error generating answer: {e}")
+                st.code(traceback.format_exc())
+else:
+    st.info("Enter a search query above to get started.")
