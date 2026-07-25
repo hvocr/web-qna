@@ -76,7 +76,7 @@ def scrape_page(url: str, timeout: int = 15) -> Optional[str]:
         # Return None but also log the error (we'll print in app)
         return None
 
-def fetch_web_content(query: str, serp_api_key: str, max_pages: int = 3) -> str:
+def fetch_web_content(query: str, serp_api_key: str, max_pages: int = 5) -> str:
     """
     Search, check legality, scrape, and return combined text.
     Also returns debug info via st.session_state.
