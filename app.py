@@ -34,6 +34,7 @@ user_query = st.text_input("What do you want to know about?")
 if st.button("Search & Load Content") and user_query:
     with st.spinner(f"Searching for '{user_query}' and scraping pages..."):
         combined_text = fetch_web_content(user_query, SERP_API_KEY, max_pages=3)
+
         if combined_text:
             chunks = chunk_plain_text(combined_text, chunk_size=500, overlap=50)
             st.session_state.chunks = chunks
@@ -41,9 +42,21 @@ if st.button("Search & Load Content") and user_query:
             st.session_state.query_done = True
             st.success(f"Loaded {len(chunks)} chunks from the web.")
         else:
-            st.error("No usable content found. Try a different query or check the debug info below.")
+            # --- IMPROVED MESSAGE ---
+            st.error(
+                "❌ **No content could be scraped from the search results.**\n\n"
+                "This can happen if:\n"
+                "- The pages are behind paywalls or require login.\n"
+                "- They contain very little text (e.g., forums with minimal content).\n"
+                "- The site blocks scraping (robots.txt).\n\n"
+                "**Try:**\n"
+                "- Using a more specific query (e.g., `\"bloodborne vs elden ring review\"`).\n"
+                "- Adding keywords like `article`, `review`, or `comparison`.\n"
+                "- Searching for a single topic first (e.g., `bloodborne review`).\n\n"
+                "Check the **debug info** below to see which URLs were tried."
+            )
 
-    # Show debug info
+    # Show debug info (always show, even if nothing scraped)
     if st.session_state.debug_info:
         with st.expander("🔍 Debug info (what was scraped)"):
             for line in st.session_state.debug_info:
